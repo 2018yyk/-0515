@@ -6,14 +6,12 @@ import numpy as np
 from models.unet1d_linear_for_gaolu import ExtendedLinearUNet  # 假设该模型已正确定义
 import random
 
-def get_time_encoding(times, dim=25):
-    device = times.device
-    pos = times.unsqueeze(1).float()  # 时间步（分钟级）
-    div_term = torch.exp(torch.arange(0, dim, 2, device=device).float() * (-np.log(10000.0) / dim))
-    encoding = torch.zeros(times.size(0), dim, device=device)
-    encoding[:, 0::2] = torch.sin(pos * div_term)
-    encoding[:, 1::2] = torch.cos(pos * div_term)
-    return encoding
+def get_time_encoding(times, dim=25, max_time=10000):
+
+    #  使用nn.Embedding
+    embedding = nn.Embedding(max_time + 1, dim)
+    encoded_tensor = embedding(times)
+    return encoded_tensor
 
 class TimeOrderClassifier(nn.Module):
     def __init__(self, input_size):
@@ -117,53 +115,55 @@ def validate_model(model, classifier, val_features_tensor, val_times_tensor, noi
     
     return np.mean(losses)
 
-# def sample(model, classifier, features_tensor, times, noise_scheduler, features_mean, features_std):
-#     model.eval()
-#     classifier.eval()
-#     generated_data = []
-#     times = pd.to_datetime(times, unit='ns')  # 转换为datetime对象
-    
-#     # 生成所有日期的每小时分钟数据
-#     for date in times.dt.normalize().unique():
-#         for hour in range(24):
-#             for minute in range(60):
-#                 current_time = date + pd.Timedelta(hours=hour, minutes=minute)
-#                 current_min = hour * 60 + minute  # 转换为总分钟数
-#                 time_tensor = torch.tensor([current_min], dtype=torch.long)
-#                 time_encoding = get_time_encoding(time_tensor)
+def sample(model, classifier, times, noise_scheduler, features_mean, features_std):
+    model.eval()
+    classifier.eval()
+    generated_data = []
+    times = pd.to_datetime(times, unit='ns')  # 转换为datetime对象
+    times_series = pd.Series(times)
+
+    # 生成所有日期的每小时每分钟数据
+    for date in times_series.dt.normalize().unique():
+        for hour in range(24):
+            for minute in range(60):
+                current_time = date + pd.Timedelta(hours=hour, minutes=minute)
+                current_min = hour * 60 + minute  # 转换为总分钟数
+                time_tensor = torch.tensor([current_min], dtype=torch.long)
+                time_encoding = get_time_encoding(time_tensor)
                 
-#                 # 初始化噪声
-#                 sample = torch.randn_like(time_encoding) * features_std + features_mean  # 逆归一化初始化？
-#                 sample = (sample - features_mean) / features_std  # 重新归一化（确保输入范围正确）
+                # 初始化噪声
+                sample = torch.randn_like(time_encoding) * features_std + features_mean  # 逆归一化初始化？
+                sample = (sample - features_mean) / features_std  # 重新归一化（确保输入范围正确）
                 
-#                 # 扩散模型逆过程
-#                 for t in reversed(range(noise_scheduler.config.num_train_timesteps)):
-#                     timesteps = torch.tensor([t], dtype=torch.long)
-#                     input_data = torch.cat((sample.unsqueeze(0), time_encoding), dim=1)
-#                     noise_pred = model(input_data, timesteps)
+                # 扩散模型逆过程
+                for t in reversed(range(noise_scheduler.config.num_train_timesteps)):
+                    timesteps = torch.tensor([t], dtype=torch.long)
+                    input_data = torch.add(sample, time_encoding)
+                    noise_pred = model(input_data, timesteps)
                     
-#                     # 分类器引导（强制时间顺序）
-#                     if minute < 59:
-#                         next_min = current_min + 1
-#                         next_time_encoding = get_time_encoding(torch.tensor([next_min], dtype=torch.long))
-#                         next_input = torch.cat((sample.unsqueeze(0), next_time_encoding), dim=1)
-#                         next_noise_pred = model(next_input, timesteps)
+                    # 分类器引导（强制时间顺序）
+                    if minute < 59:
+                        next_min = current_min + 1
+                        next_time_encoding = get_time_encoding(torch.tensor([next_min], dtype=torch.long))
+                        next_input = torch.add(sample, next_time_encoding)
+                        next_noise_pred = model(next_input, timesteps)
                         
-#                         # 拼接当前和下一分钟特征，预测顺序
-#                         combined = torch.cat([sample.unsqueeze(0), next_noise_pred], dim=1)
-#                         order_prob = torch.softmax(classifier(combined), dim=1)
+                        # 拼接当前和下一分钟特征，预测顺序
+                        combined = torch.cat([sample, next_noise_pred], dim=1)
+                        order_prob = torch.softmax(classifier(combined), dim=1)
                         
-#                         # 若预测下一分钟在后，交换噪声预测（确保顺序）
-#                         if order_prob[0, 1] > 0.5:
-#                             noise_pred, next_noise_pred = next_noise_pred, noise_pred
+                        # 若预测下一分钟在后，交换噪声预测（确保顺序）
+                        if order_prob[0, 1] > 0.5:
+                            noise_pred, next_noise_pred = next_noise_pred, noise_pred
                     
-#                     sample = noise_scheduler.step(noise_pred, t, sample.unsqueeze(0)).prev_sample.squeeze(0)
+                    sample = noise_scheduler.step(noise_pred, t, sample.unsqueeze(0)).prev_sample.squeeze(0)
                 
-#                 # 逆归一化
-#                 sample = sample.numpy() * features_std.numpy().squeeze() + features_mean.numpy().squeeze()
-#                 generated_data.append([current_time] + sample.tolist())
+                # 逆归一化
+                sample = sample.numpy() * features_std.numpy().squeeze() + features_mean.numpy().squeeze()
+                generated_data.append([current_time] + sample.tolist())
     
-#     return generated_data
+    return generated_data
+
 
 def generate_minute_data(file_path):
     # 读取数据（假设原始数据列为'作业时间'和特征列）
@@ -176,11 +176,13 @@ def generate_minute_data(file_path):
     features = df[feature_columns].values.astype(np.float32)
     times = df['作业时间'].values.astype('datetime64[ns]')
     
+    start_time = np.array([pd.to_datetime(times[0].astype('datetime64[D]'))] * len(times), dtype='datetime64[ns]')
+
     # 转换为分钟级时间戳（总分钟数）
-    times_min = (times - pd.to_datetime(times[0].astype('datetime64[D]'))) // pd.Timedelta(minutes=1)
+    times_min = (times - start_time) // pd.Timedelta(minutes=1)
     times_tensor = torch.from_numpy(times_min.astype(np.int64))
     features_tensor = torch.from_numpy(features)
-    
+
     # 归一化
     features_mean = features_tensor.mean(dim=0, keepdim=True)
     features_std = features_tensor.std(dim=0, keepdim=True)
@@ -197,15 +199,15 @@ def generate_minute_data(file_path):
     classifier = TimeOrderClassifier(input_size=features.shape[1] * 2)
     optimizer = torch.optim.AdamW(list(model.parameters()) + list(classifier.parameters()), lr=1e-4)
     
-    # 训练
-    train_model(model, classifier, train_features, train_times, noise_scheduler, optimizer, num_epochs=50)
+    # # 训练
+    # train_model(model, classifier, train_features, train_times, noise_scheduler, optimizer, num_epochs=50)
     
-    # 验证
-    val_loss = validate_model(model, classifier, val_features, val_times, noise_scheduler)
-    print(f'Validation Loss: {val_loss:.4f}')
+    # # 验证
+    # val_loss = validate_model(model, classifier, val_features, val_times, noise_scheduler)
+    # print(f'Validation Loss: {val_loss:.4f}')
     
     # 生成数据
-    # syn_data = sample(model, classifier, features_tensor, times, noise_scheduler, features_mean, features_std)
+    syn_data = sample(model, classifier, times, noise_scheduler, features_mean, features_std)
     
     # 保存结果
     # all_columns = ['RECORD_TIME'] + feature_columns

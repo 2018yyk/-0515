@@ -6,7 +6,7 @@ import numpy as np
 from models.unet1d_linear_for_gaolu import ExtendedLinearUNet  # 假设该模型已正确定义
 import random
 
-def get_time_encoding(times, dim=25, max_time=10000):
+def get_time_encoding(times, dim=25, max_time=1000000):
 
     #  使用nn.Embedding
     embedding = nn.Embedding(max_time + 1, dim)
@@ -32,7 +32,7 @@ def train_model(model, classifier, features_tensor, times_tensor, noise_schedule
         classifier.train()
         losses = []
         for i in range(len(features_tensor)):
-            t = random.randint(0, noise_scheduler.config.num_train_timesteps)
+            t = random.randint(0, noise_scheduler.config.num_train_timesteps - 1)
             timesteps = torch.tensor([t], dtype=torch.long)
             
             # 添加噪声
@@ -41,6 +41,7 @@ def train_model(model, classifier, features_tensor, times_tensor, noise_schedule
                 torch.randn_like(features_tensor[i].unsqueeze(0)),
                 timesteps
             )
+            # print(times_tensor[i])
             time_encoding = get_time_encoding(times_tensor[i].unsqueeze(0))
             input_data = torch.add(noisy_features, time_encoding)
             
@@ -200,19 +201,19 @@ def generate_minute_data(file_path):
     optimizer = torch.optim.AdamW(list(model.parameters()) + list(classifier.parameters()), lr=1e-4)
     
     # # 训练
-    # train_model(model, classifier, train_features, train_times, noise_scheduler, optimizer, num_epochs=50)
+    train_model(model, classifier, train_features, train_times, noise_scheduler, optimizer, num_epochs=50)
     
     # # 验证
-    # val_loss = validate_model(model, classifier, val_features, val_times, noise_scheduler)
-    # print(f'Validation Loss: {val_loss:.4f}')
+    val_loss = validate_model(model, classifier, val_features, val_times, noise_scheduler) 
+    print(f'Validation Loss: {val_loss:.4f}')
     
     # 生成数据
     syn_data = sample(model, classifier, times, noise_scheduler, features_mean, features_std)
     
     # 保存结果
-    # all_columns = ['RECORD_TIME'] + feature_columns
-    # generated_df = pd.DataFrame(syn_data, columns=all_columns)
-    # generated_df.to_csv('generated_minute_data.csv', index=False)
+    all_columns = ['RECORD_TIME'] + feature_columns
+    generated_df = pd.DataFrame(syn_data, columns=all_columns)
+    generated_df.to_csv('generated_minute_data.csv', index=False)
 
 if __name__ == '__main__':
     file_path = 'data/高炉运行参数.xlsx'

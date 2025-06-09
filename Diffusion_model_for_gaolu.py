@@ -5,6 +5,7 @@ from diffusers import DDPMScheduler
 import numpy as np
 from models.unet1d_linear_for_gaolu import ExtendedLinearUNet  # 假设该模型已正确定义
 import random
+from tqdm import tqdm
 
 def get_time_encoding(times, dim=25, max_time=1000000):
 
@@ -123,6 +124,9 @@ def sample(model, classifier, times, noise_scheduler, features_mean, features_st
     times = pd.to_datetime(times, unit='ns')  # 转换为datetime对象
     times_series = pd.Series(times)
 
+    total_iterations = len(times_series.dt.normalize().unique()) * 24 * 60
+    progress_bar = tqdm(total=total_iterations, desc="生成数据进度")
+
     # 生成所有日期的每小时每分钟数据
     for date in times_series.dt.normalize().unique():
         for hour in range(24):
@@ -160,9 +164,12 @@ def sample(model, classifier, times, noise_scheduler, features_mean, features_st
                     sample = noise_scheduler.step(noise_pred, t, sample.unsqueeze(0)).prev_sample.squeeze(0)
                 
                 # 逆归一化
-                sample = sample.numpy() * features_std.numpy().squeeze() + features_mean.numpy().squeeze()
+                sample = sample.detach().numpy() * features_std.detach().numpy().squeeze() + features_mean.detach().numpy().squeeze()
                 generated_data.append([current_time] + sample.tolist())
-    
+                print(sample)
+                progress_bar.update(1)  # 更新进度条
+                
+    progress_bar.close()            
     return generated_data
 
 
@@ -201,19 +208,20 @@ def generate_minute_data(file_path):
     optimizer = torch.optim.AdamW(list(model.parameters()) + list(classifier.parameters()), lr=1e-4)
     
     # # 训练
-    train_model(model, classifier, train_features, train_times, noise_scheduler, optimizer, num_epochs=50)
+    # train_model(model, classifier, train_features, train_times, noise_scheduler, optimizer, num_epochs=50)
     
-    # # 验证
-    val_loss = validate_model(model, classifier, val_features, val_times, noise_scheduler) 
-    print(f'Validation Loss: {val_loss:.4f}')
+    # # # 验证
+    # val_loss = validate_model(model, classifier, val_features, val_times, noise_scheduler) 
+    # print(f'Validation Loss: {val_loss:.4f}')
     
     # 生成数据
     syn_data = sample(model, classifier, times, noise_scheduler, features_mean, features_std)
     
     # 保存结果
-    all_columns = ['RECORD_TIME'] + feature_columns
+    all_columns = ['作业时间'] + feature_columns
     generated_df = pd.DataFrame(syn_data, columns=all_columns)
     generated_df.to_csv('generated_minute_data.csv', index=False)
+
 
 if __name__ == '__main__':
     file_path = 'data/高炉运行参数.xlsx'

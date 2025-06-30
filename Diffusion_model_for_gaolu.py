@@ -7,6 +7,7 @@ from models.unet1d_linear_for_gaolu import ExtendedLinearUNet  # 假设该模型
 import random
 from tqdm import tqdm
 import time
+import matplotlib.pyplot as plt
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # def get_time_encoding(times, dim=25, max_time=10000000):
@@ -36,6 +37,7 @@ class TimeOrderClassifier(nn.Module):
 
 def train_model(model, classifier, features_tensor, times_tensor, noise_scheduler, optimizer, num_epochs, guidance_weight=1.0):
     criterion = nn.CrossEntropyLoss()
+    epoch_losses = []  # 用于保存每个epoch的平均损失
     for epoch in range(num_epochs):
         model.train()
         classifier.train()
@@ -85,9 +87,12 @@ def train_model(model, classifier, features_tensor, times_tensor, noise_schedule
             optimizer.zero_grad()
             total_loss.backward()
             optimizer.step()
-        
-        print(f'Epoch {epoch+1}/{num_epochs} - Loss: {np.mean(losses):.4f}')
 
+        epoch_loss = np.mean(losses)
+        epoch_losses.append(epoch_loss)
+        # print(f'Epoch {epoch+1}/{num_epochs} - Loss: {np.mean(losses):.4f}')
+        print(f'Epoch {epoch + 1}/{num_epochs} - Loss: {epoch_loss:.4f}')
+    return epoch_losses
 def validate_model(model, classifier, val_features_tensor, val_times_tensor, noise_scheduler, guidance_weight=1.0):
     criterion = nn.CrossEntropyLoss()
     model.eval()
@@ -257,7 +262,7 @@ def sample(model, classifier, times, noise_scheduler, features_mean, features_st
                 progress_bar.update(1)
 
     progress_bar.close()
-    print('generated_data', generated_data)
+    # print('generated_data', generated_data)
     return generated_data
 
 
@@ -291,13 +296,16 @@ def generate_minute_data(file_path):
     train_times, val_times = times_tensor[:train_size], times_tensor[train_size:]
     
     # 初始化模型和调度器
-    noise_scheduler = DDPMScheduler(num_train_timesteps=1000)
+    # noise_scheduler = DDPMScheduler(num_train_timesteps=1000)
+    noise_scheduler = DDPMScheduler(num_train_timesteps=500, beta_schedule="squaredcos_cap_v2")
     model = ExtendedLinearUNet().to(device)  # 确保模型输入维度正确（特征数+时间编码维度）
     classifier = TimeOrderClassifier(input_size=features.shape[1] * 2).to(device)
     optimizer = torch.optim.AdamW(list(model.parameters()) + list(classifier.parameters()), lr=1e-4)
 
     # # 训练
-    train_model(model, classifier, train_features, train_times, noise_scheduler, optimizer, num_epochs=150)
+    # train_model(model, classifier, train_features, train_times, noise_scheduler, optimizer, num_epochs=150)
+    epoch_losses = train_model(model, classifier, train_features, train_times, noise_scheduler, optimizer,
+                               num_epochs=1000)
 
     # 验证
     val_loss = validate_model(model, classifier, val_features, val_times, noise_scheduler)
@@ -315,6 +323,14 @@ def generate_minute_data(file_path):
 
     generated_df = pd.DataFrame(flat_syn_data, columns=all_columns)
     generated_df.to_csv('generated_minute_data.csv', index=False, encoding='utf-8-sig')
+    plt.figure(figsize=(8, 5))
+    plt.plot(range(1, len(epoch_losses) + 1), epoch_losses, label='Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training Loss Curve')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 if __name__ == '__main__':
     file_path = 'data/高炉运行参数.xlsx'
     # file_path = 'data/高炉运行参数-24-28号.xlsx'

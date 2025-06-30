@@ -4,9 +4,10 @@ import numpy as np
 
 
 def get_time_embedding(timesteps, dim=128):
+    device = timesteps.device
     half_dim = dim // 2
     emb = np.log(10000) / (half_dim - 1)
-    emb = torch.exp(torch.arange(half_dim, dtype=torch.float32) * -emb)
+    emb = torch.exp(torch.arange(half_dim, dtype=torch.float32, device=device) * -emb)
     emb = timesteps.float()[:, None] * emb[None, :]
     emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
     if dim % 2 == 1:  # zero pad
